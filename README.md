@@ -35,7 +35,7 @@ Built with **Flask** and **MySQL / MariaDB**. Runs locally with XAMPP and deploy
 - View current prescription and history
 - In-app **Reminders** with unread badge; acknowledge follow-ups, request a new time, or dismiss missed appointments
 - **Two-way clinic chat** with staff
-- Profile, email change, password reset, and optional **two-step sign-in**
+- **Profile** page with contact details, reminder channel (SMS or email) and the **Security** section for optional two-step sign-in; also email change and password reset
 
 ### Staff portal
 - **Dashboard** with KPIs, an urgent list (with Resolve action) and a clinic snapshot
@@ -53,7 +53,7 @@ A background scheduler (APScheduler) runs four jobs:
 
 | Job | Frequency | Purpose |
 |---|---|---|
-| Appointment reminders | every 15 min | Emails patients about confirmed appointments about 24 hours away |
+| Appointment reminders | every 15 min | Texts or emails patients (by their preferred channel) about confirmed appointments about 24 hours away |
 | Prescription reminders | hourly | Reminds patients whose prescription review date is tomorrow |
 | Purge stale rows | every 6 hours | Removes expired rate-limit rows |
 | No-show check | every 15 min | Marks Pending or Confirmed appointments as **Missed** when they are still not attended `MISSED_GRACE_MINUTES` after their start time (default 120), and closes open patient requests whose requested time has passed |
@@ -70,6 +70,7 @@ Each job is guarded by a database lock, so it is safe to run several worker proc
 | Database | MySQL / MariaDB via `mysql-connector-python` |
 | Scheduling | APScheduler |
 | Email | Gmail SMTP (optional) |
+| SMS | Android phone gateway, Twilio or Semaphore (optional); demo mode for testing |
 | Auth extras | TOTP two-step sign-in, Google OAuth (optional), `segno` for QR codes |
 | Frontend | Server-rendered Jinja2 templates, plain CSS and JavaScript, self-hosted Instrument Sans font |
 | Production serving | Waitress (Windows / Linux) or Gunicorn (Linux), behind Nginx or Caddy |
@@ -87,6 +88,7 @@ Exact versions are pinned in `requirements.txt`.
 ├── production.py           Config validation, security headers, logging
 ├── mfa.py                  Two-step sign-in (TOTP + backup codes)
 ├── google_auth.py          Google OAuth sign-in for patients
+├── sms.py                  SMS sending (Twilio / Semaphore) and phone-number cleanup
 ├── requirements.txt        Pinned dependencies
 ├── .env.example            Local configuration template
 ├── .env.production.example Production configuration template
@@ -249,6 +251,12 @@ All settings come from `.env`. Never commit or share this file.
 | `SEED_DEMO_ACCOUNTS` | `true` only on a local demo machine |
 | `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` / `MAIL_DEFAULT_SENDER` | Optional email delivery |
 | `MAIL_SERVER` / `MAIL_PORT` | SMTP host and port (default `smtp.gmail.com` / `587`) |
+| `SMS_PROVIDER` | `traccar` or `android` (free, phone as gateway), `demo` (free test mode), `twilio` or `semaphore` (paid); empty keeps SMS off |
+| `TRACCAR_SMS_TOKEN` / `TRACCAR_SMS_URL` | Traccar SMS Gateway app: the token shown in the app; URL empty = Traccar's cloud |
+| `ANDROID_SMS_USER` / `ANDROID_SMS_PASSWORD` / `ANDROID_SMS_URL` | Android phone gateway: app credentials, and the phone's address for Local mode (empty = Cloud mode) |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` (or `TWILIO_MESSAGING_SERVICE_SID`) | Twilio credentials |
+| `SEMAPHORE_API_KEY` / `SEMAPHORE_SENDER_NAME` | Semaphore credentials (sender name optional, must be approved by Semaphore) |
+| `SMS_DEFAULT_COUNTRY_CODE` | Country code for numbers typed without one (default `63`, Philippines) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional Google sign-in. Leave empty to hide the buttons. |
 
 **Production-only settings** (see `.env.production.example`): `APP_ENV=production`, `TRUST_PROXY`, `PROXY_HOPS`, `CLINIC_NAME`, `CLINIC_CONTACT_EMAIL`, `CLINIC_ADDRESS`, `LOG_FILE`, `LOG_LEVEL`.
@@ -258,6 +266,40 @@ With `APP_ENV=production` the app **refuses to start** if the secret key is weak
 ### Email
 
 Gmail delivery needs a Google **App Password** (not your normal password). Without email configured, the app still works: reminders appear in the patient's in-app Reminders page, but verification emails and email reminders are not sent.
+
+### SMS
+
+SMS is optional and uses only the Python standard library. Set `SMS_PROVIDER` plus that provider's settings (see the table above) and restart the app. Patients whose preferred reminder channel is **SMS** (and who have a mobile number saved) are then texted for appointment and prescription reminders, and staff can press **SMS** next to an urgent patient on the dashboard. If an SMS cannot be sent the app falls back to email, and every reminder is still posted on the patient's website Reminders page. With `SMS_PROVIDER` empty nothing is texted and the Profile page tells patients reminders will be emailed. Numbers are accepted as `0917 123 4567`, `63917...` or `+63 917 ...`. Texts are capped at 320 characters. Trial accounts (e.g. Twilio) can only text numbers you have verified with the provider.
+
+#### Free option A: Traccar SMS Gateway (on Google Play)
+
+1. On an Android phone with a SIM, install **Traccar SMS Gateway** from Google Play (package `org.traccar.gateway`). Allow the SMS permission and keep the phone on and online.
+2. Open the app and copy the **token** it shows.
+3. In `.env`: `SMS_PROVIDER=traccar` and `TRACCAR_SMS_TOKEN=<token>`, then restart. (To reach the phone directly on your Wi-Fi instead of Traccar's cloud, set `TRACCAR_SMS_URL` to the URL the app shows and use the app's API key as the token.)
+4. Test with your own number from the staff dashboard **SMS** button. Cloud mode passes message text and numbers through Traccar's server; prefer the direct URL for real patient data.
+
+#### Free option B: use an Android phone with SMS Gateway for Android (APK only)
+
+Uses the open-source **SMS Gateway for Android** app (github.com/capcom6/android-sms-gateway, Apache-2.0, no account needed). The texts go out from the phone's SIM, so they use that SIM's load or text promo.
+
+1. Install the app on an Android phone (APK from the project's GitHub *Releases* page) and allow the **SEND_SMS** permission. Keep the phone on, with signal, and turn off battery optimisation for the app.
+2. Choose a mode in the app:
+   - **Local server** (best for a clinic PC): switch it on, tap *Offline* to start it, and note the phone's address, username and password. The phone and the HawkEye PC must be on the same Wi-Fi/LAN. Use a fixed IP for the phone (router DHCP reservation).
+   - **Cloud server**: works when HawkEye is hosted online. Switch it on and note the username and password. Message text and phone numbers pass through that third-party server, so prefer Local mode for patient data.
+3. In `.env`:
+   ```
+   SMS_PROVIDER=android
+   ANDROID_SMS_USER=<username from the app>
+   ANDROID_SMS_PASSWORD=<password from the app>
+   ANDROID_SMS_URL=http://192.168.1.50:8080     # Local mode: the phone's address. Leave empty for Cloud mode.
+   ```
+4. Restart HawkEye and test with your own number (staff dashboard **SMS** button, or a patient with channel SMS).
+
+Limits: HawkEye reports a text as sent when the gateway **accepts** it; the phone then sends it, so it must be on and online. Mobile carriers may limit or flag bulk texting from one SIM, so this suits a small clinic's reminders, not mass messages.
+
+#### Demo mode (no phone, no cost)
+
+`SMS_PROVIDER=demo` runs every SMS button and reminder without sending anything. Each message is appended to `logs/sms_demo.log` (numbers partly hidden) and the reminder shows as **SMS (demo)**. Use it for demonstrations; switch to a real provider for real patients.
 
 ### Google sign-in (patients)
 
@@ -385,6 +427,7 @@ Patient data lives in the database, so back it up.
 | `.env` missing after cloning from GitHub | Expected: it is never uploaded. Copy `.env.example` to `.env` and fill it in. |
 | Port 5000 already in use | Close the other program using it, or stop any earlier copy of the app. |
 | No emails arrive | Check the Gmail App Password and `MAIL_DEFAULT_SENDER`. Demo `example.test` addresses never deliver. |
+| No SMS arrives | Check `SMS_PROVIDER` and credentials (for the Android gateway: app running, phone online, correct `ANDROID_SMS_URL`), that the patient has a valid mobile number, and `logs/hawkeye.log` for the provider's error. Trial accounts only text verified numbers; Semaphore only sends to Philippine numbers. |
 | QR code missing on two-step setup | Install dependencies (`segno`); the setup key can be typed in instead. |
 | Everyone is locked out behind a proxy | Set `TRUST_PROXY=true` and the right `PROXY_HOPS`. |
 | Locked-out staff member (lost phone) | An Admin uses **Reset 2-step** on the User management page. |

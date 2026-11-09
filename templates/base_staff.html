@@ -30,7 +30,7 @@
     <div class="side-links">
       <a class="btn" href="{{url_for('account_security')}}"{% if ep in ['account_security'] %} aria-current="page"{% endif %}><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>Security</a>
       <a class="btn" href="{{url_for('staff_change_password')}}"><svg class="icon" aria-hidden="true"><use href="#i-key"/></svg>Change password</a>
-      <form class="inline-form" method="post" action="{{url_for('logout')}}"><button class="btn" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>Sign out</button></form>
+      <form class="inline-form" method="post" action="{{url_for('logout')}}"><button class="btn danger" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>Sign out</button></form>
     </div>
   </div>
   </div>

@@ -56,7 +56,7 @@ def make_user(email, role='Patient', password='Correct-horse-1', name='Test Pers
     return uid, password
 
 def csrf(client, path):
-    html = client.get(path).get_data(as_text=True)
+    html = client.get(path, follow_redirects=True).get_data(as_text=True)   # /account/security redirects patients to Profile
     m = re.search(r'name="csrf_token"\s+value="([^"]+)"', html)
     return m.group(1) if m else ''
 
@@ -287,8 +287,11 @@ class TwoStepSignIn(unittest.TestCase):
     def test_security_page_renders_for_patient_and_staff_during_setup(self):
         uid, pw = make_user('p9@example.test'); password_login(self.client, 'p9@example.test', pw)
         post(self.client, '/account/security', '/account/mfa/start')
-        html = self.client.get('/account/security').get_data(as_text=True)
-        self.assertIn('setup-key', html)
+        r = self.client.get('/account/security')                       # patients are sent to Profile > Security
+        self.assertEqual(r.status_code, 302); self.assertTrue(r.headers['Location'].endswith('/patient/profile#security'))
+        html = self.client.get('/patient/profile').get_data(as_text=True)
+        self.assertIn('setup-key', html); self.assertIn('id="security"', html)
+        self.assertNotIn('>Security</a>', html)                          # no separate Security tab for patients
         staff_id, spw = make_user('s9@example.test', role='Clinic Staff', name='Clerk')
         c = A.app.test_client(); password_login(c, 's9@example.test', spw, patient=False)
         self.assertIn('Security', c.get('/account/security').get_data(as_text=True))

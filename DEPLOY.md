@@ -131,6 +131,10 @@ Mailgun): set `MAIL_SERVER`, `MAIL_PORT`, `GMAIL_ADDRESS` (= SMTP username), `GM
 (= SMTP password) and `MAIL_DEFAULT_SENDER`, and add the **SPF and DKIM** records the provider gives you.
 After setup, test it: open **Forgot password** on the patient login page with your own email address and check that the reset email arrives (and is not in spam). If it doesn't, `logs/hawkeye.log` says why (wrong SMTP login, blocked sender, etc.).
 
+### SMS reminders (optional)
+
+For a free option set `SMS_PROVIDER=android` and use an Android phone with the SMS Gateway for Android app (README > SMS; Local mode needs the phone and server on the same network, Cloud mode works with a hosted server). Otherwise set `SMS_PROVIDER=twilio` (with `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM_NUMBER` or `TWILIO_MESSAGING_SERVICE_SID`) or `SMS_PROVIDER=semaphore` (with `SEMAPHORE_API_KEY`, optional `SEMAPHORE_SENDER_NAME`). Restart the service, then test: on the staff dashboard press **SMS** next to an urgent patient whose phone is your own, or save your number on a patient's Profile and set the channel to SMS. If nothing arrives, `logs/hawkeye.log` shows the provider's reason. In the Philippines, sender names and some routes need provider approval; allow time for that before go-live.
+
 ### Google sign-in and two-step sign-in (optional)
 
 - **Google:** in Google Cloud Console create an OAuth client (*Web application*) and register the redirect URI `https://YOUR-DOMAIN/auth/google/callback` (it must match `APP_BASE_URL` exactly). Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`. While the OAuth consent screen is in "Testing", only listed test users can sign in; publish it for real patients. Keep the secret out of Git and chat like the other secrets.

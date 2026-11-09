@@ -629,3 +629,20 @@ a,button,input,select,textarea,summary,label{touch-action:manipulation}
   .card{overflow-x:auto}
   main.content,main.patient{overflow-x:clip}
 }
+
+/* Security page: centred, two cards side by side (stacks on phones) */
+.sec-head{text-align:center;justify-content:center}
+.sec-head>div{margin:0 auto}
+.sec-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),440px));justify-content:center;align-items:start;gap:var(--s-4);margin:0 auto var(--s-5)}
+.sec-grid .card{max-width:none;margin:0}
+.sec-grid .sec-wide{grid-column:1/-1}
+.sec-grid .qr{margin:0 auto}
+.sec-grid .qr-actions{justify-content:center}
+.sec-grid .setup-key{display:block;text-align:center}
+.sec-grid .sec-wide .backup-codes{max-width:420px;margin-inline:auto}
+
+/* Patient nav: red Sign out, set apart at the far end */
+.patientnav .nav-signout{margin:0 0 0 auto;padding-left:var(--s-4);border-left:1px solid var(--line);display:flex;align-items:center;flex:none}
+.patientnav .nav-signout button{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0 14px;border:1px solid var(--bad-line);border-radius:999px;background:var(--bad-tint);color:var(--bad);font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}
+.patientnav .nav-signout button:hover{border-color:var(--bad)}
+.patientnav .nav-signout .icon{width:16px;height:16px}

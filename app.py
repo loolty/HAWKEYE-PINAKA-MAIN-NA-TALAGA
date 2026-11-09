@@ -33,7 +33,7 @@ from email.message import EmailMessage
 from markupsafe import escape as esc          # HTML-escape anything a person typed before it goes into an email
 from werkzeug.exceptions import HTTPException
 import production
-import mfa, google_auth
+import mfa, google_auth, sms
 import time as _time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -173,6 +173,35 @@ def send_email(to_email, subject, html, text_body=None):
         return False, 'Gmail could not send the email. Check SMTP settings and internet connection.'
 
 
+# Delivers one message to a patient by their preferred channel, with the other channel as a fallback:
+#   preferred SMS (and a phone on file)  -> SMS first, email if the SMS could not be sent
+#   preferred Email (or no phone)        -> email first, SMS if the email failed and SMS is switched on
+# Returns (via, detail, label, status): via is the list of channels that worked, label/status are what to store
+# on the reminder row. Never raises. Nothing on file at all -> website-only reminder (status 'Sent').
+def notify_patient(email, phone, channel, subject, html, text, sms_text):
+    via, notes = [], []
+    prefer_sms = bool(phone) and (channel == 'SMS' or not email)
+    tried_sms = False
+    if prefer_sms:
+        tried_sms = True; ok, d = sms.send_sms(phone, sms_text)
+        if ok: via.append('SMS')
+        else: notes.append(d)
+    if not via and email:
+        ok, d = send_email(email, subject, html, text)
+        if ok: via.append('Email')
+        else: notes.append(d)
+    if not via and phone and not tried_sms and sms.is_configured():
+        ok, d = sms.send_sms(phone, sms_text)
+        if ok: via.append('SMS')
+        else: notes.append(d)
+    if via:
+        names = [sms.channel_label() if v == 'SMS' else v for v in via]
+        return via, 'Sent by ' + ' and '.join(n.lower() for n in names) + '.', ' + '.join(names) + ' + Website', 'Sent'
+    if not email and not phone:
+        return [], 'Posted on the patient website (no email address or phone number on file).', 'Website', 'Sent'
+    detail = ' '.join(notes) or 'No message could be sent.'
+    return [], detail, 'Website (delivery failed)', 'Failed'
+
 # Creates the full URL a patient clicks to verify their email (signed token + APP_BASE_URL).
 def email_verification_link(user_id, email):
     token = token_serializer().dumps({'uid': user_id, 'email': email})
@@ -186,8 +215,8 @@ def post_website_reminder(c, patient_id, appointment_id, message, channel='Websi
     c.execute('INSERT INTO reminders(patient_id,appointment_id,channel,message,sent_date,status,read_status) VALUES(?,?,?,?,?,?,?)',
               (patient_id, appointment_id, channel, message, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), status, 'Unread'))
 
-# Reminds a patient about an appointment: always posts a website reminder, also emails them if
-# an address exists, and records Sent/Failed on the appointment.
+# Reminds a patient about an appointment: always posts a website reminder, also sends an SMS or email
+# (see notify_patient) and records Sent/Failed on the appointment. (Name kept for existing callers.)
 def send_appointment_email(appointment_id, reason='scheduled reminder'):
     """Remind a patient about an appointment.
 
@@ -195,20 +224,16 @@ def send_appointment_email(appointment_id, reason='scheduled reminder'):
     menu badge / home page). An email is also sent when the patient has an address on file.
     Returns (ok, detail) where ok means the patient was successfully reminded by at least the website."""
     c = db()
-    a = c.execute('SELECT a.*, p.name, p.email, p.channel, p.patient_id AS patient_code FROM appointments a JOIN patients p ON p.id=a.patient_id WHERE a.id=?', (appointment_id,)).fetchone()
+    a = c.execute('SELECT a.*, p.name, p.email, p.phone, p.channel, p.patient_id AS patient_code FROM appointments a JOIN patients p ON p.id=a.patient_id WHERE a.id=?', (appointment_id,)).fetchone()
     if not a:
         c.close(); return False, 'Appointment not found.'
     msg = f"Hello {a['name']}, this is HawkEye Optical Clinic. Your {a['type'].lower()} is scheduled for {a['date']} at {a['time']}. Please contact the clinic if you need to reschedule."
-    if a['email']:
-        ok, detail = send_email(a['email'], 'HawkEye Optical Clinic appointment reminder', f'<p>Hello {esc(a["name"])},</p><p>This is a reminder that your <b>{esc(a["type"])}</b> is scheduled for <b>{esc(a["date"])} at {esc(a["time"])}</b>.</p><p>Please contact the clinic if you need to reschedule.</p><p>HawkEye Optical Clinic</p>', msg)
-        post_website_reminder(c, a['patient_id'], appointment_id, msg, 'Email + Website' if ok else 'Website (email failed)', 'Sent' if ok else 'Failed')
-        c.execute('UPDATE appointments SET reminder_status=? WHERE id=?', ('Sent' if ok else 'Failed', appointment_id))
-        c.commit(); c.close()
-        return True, (detail if ok else 'Posted on the patient website, but the email failed: ' + detail)
-    post_website_reminder(c, a['patient_id'], appointment_id, msg, 'Website', 'Sent')
-    c.execute('UPDATE appointments SET reminder_status=? WHERE id=?', ('Sent', appointment_id))
+    html = f'<p>Hello {esc(a["name"])},</p><p>This is a reminder that your <b>{esc(a["type"])}</b> is scheduled for <b>{esc(a["date"])} at {esc(a["time"])}</b>.</p><p>Please contact the clinic if you need to reschedule.</p><p>HawkEye Optical Clinic</p>'
+    via, detail, label, status = notify_patient(a['email'], a['phone'], a['channel'], 'HawkEye Optical Clinic appointment reminder', html, msg, msg)
+    post_website_reminder(c, a['patient_id'], appointment_id, msg, label, status)
+    c.execute('UPDATE appointments SET reminder_status=? WHERE id=?', (status, appointment_id))
     c.commit(); c.close()
-    return True, 'Posted on the patient website (no email address on file).'
+    return True, (detail if status == 'Sent' else 'Posted on the patient website, but delivery failed: ' + detail)
 
 # Scheduled job (every 15 min): finds confirmed appointments about 24 hours away that have not
 # been reminded yet and reminds the patient.
@@ -615,17 +640,15 @@ def init_db():
 def send_due_prescription_reminders():
     """Send a once-per-return-date email for prescriptions whose review date is tomorrow."""
     target=(date.today()+timedelta(days=1)).isoformat(); c=db()
-    rows=c.execute("SELECT p.id,p.patient_id,p.return_date,pt.name,pt.email FROM prescriptions p JOIN patients pt ON pt.id=p.patient_id WHERE p.return_date=?",(target,)).fetchall()
+    rows=c.execute("SELECT p.id,p.patient_id,p.return_date,pt.name,pt.email,pt.phone,pt.channel FROM prescriptions p JOIN patients pt ON pt.id=p.patient_id WHERE p.return_date=?",(target,)).fetchall()
     for r in rows:
-        already=c.execute("SELECT 1 FROM reminders WHERE patient_id=? AND appointment_id IS NULL AND message LIKE ? AND status='Sent' LIMIT 1",(r['patient_id'],f'%prescription review date {target}%')).fetchone()
+        already=c.execute("SELECT 1 FROM reminders WHERE patient_id=? AND appointment_id IS NULL AND message LIKE ? AND status='Sent' LIMIT 1",(r['patient_id'],f'%prescription review around {target}%')).fetchone()
         if already: continue
         message=f"Hello {r['name']}, HawkEye Optical Clinic recommends a prescription review around {target}. Please contact the clinic to arrange a visit."
-        if r['email']:
-            ok,detail=send_email(r['email'],'HawkEye Optical Clinic prescription follow-up',f'<p>Hello {esc(r["name"])},</p><p>HawkEye Optical Clinic recommends a prescription review around <b>{target}</b>.</p><p>Please contact the clinic to arrange a visit.</p>',message)
-            post_website_reminder(c,r['patient_id'],None,message,'Email + Website' if ok else 'Website (email failed)','Sent' if ok else 'Failed')
-            if not ok: app.logger.warning('Prescription reminder email failed for patient %s: %s',r['patient_id'],detail)
-        else:
-            post_website_reminder(c,r['patient_id'],None,message,'Website','Sent')
+        html=f'<p>Hello {esc(r["name"])},</p><p>HawkEye Optical Clinic recommends a prescription review around <b>{target}</b>.</p><p>Please contact the clinic to arrange a visit.</p>'
+        via,detail,label,status=notify_patient(r['email'],r['phone'],r['channel'],'HawkEye Optical Clinic prescription follow-up',html,message,message)
+        post_website_reminder(c,r['patient_id'],None,message,label,status)
+        if status=='Failed': app.logger.warning('Prescription reminder delivery failed for patient %s: %s',r['patient_id'],detail)
     c.commit(); c.close()
 
 # Writes an audit-log entry (who did what, to which record, when). The caller commits it.
@@ -683,6 +706,12 @@ def linkable_patient(c, code, birthdate, name, email):
     if not p or p['user_id']: return None
     on_file=(p['email'] or '').strip().lower()
     return p if on_file and on_file==(email or '').strip().lower() else None
+
+# An unclaimed clinic record (added by staff) that holds exactly this email, or None. Used when the patient
+# signs up without knowing their patient ID: the verification code is mailed to that same address, so only
+# the owner of the email can finish linking.
+def claimable_by_email(c, email):
+    return c.execute('SELECT * FROM patients WHERE lower(email)=? AND user_id IS NULL ORDER BY id LIMIT 1',((email or '').strip().lower(),)).fetchone()
 
 # Public landing page.
 # Route: GET /  |  Access: public
@@ -747,8 +776,8 @@ def signup():
             if c.execute("SELECT 1 FROM users WHERE lower(email)=?", (email,)).fetchone():
                 flash('An account with that email already exists. Sign in or request a new verification email if it is still unverified.', 'error')
                 return render_template('signup.html')
-            if not existing_code and c.execute('SELECT 1 FROM patients WHERE lower(email)=? LIMIT 1', (email,)).fetchone():
-                flash('A clinic record may already exist for this email. Enter your patient ID and birthdate to link it, or contact the clinic.', 'error')
+            if not existing_code and not claimable_by_email(c, email) and c.execute('SELECT 1 FROM patients WHERE lower(email)=? LIMIT 1', (email,)).fetchone():
+                flash('That email is already linked to a patient account. Sign in, or use Forgot password.', 'error')
                 return render_template('signup.html')
             if existing_code:
                 if not linkable_patient(c, existing_code, birthdate, name, email):
@@ -834,9 +863,13 @@ def verify_signup_email():
                     flash('The clinic record could not be linked. Please start signup again or contact the clinic.', 'error')
                     return redirect(url_for('signup'))
             else:
-                patient_code = new_patient_code(c)
-                c.execute('INSERT INTO patients(patient_id,name,email,user_id,channel,branch_id) VALUES(?,?,?,?,?,1)',
-                          (patient_code, pending['name'], email, uid, 'Email'))
+                rec = claimable_by_email(c, email)
+                # Clinic already added this email: attach the new account to that record (atomic claim).
+                claimed = c.execute("UPDATE patients SET user_id=? WHERE id=? AND user_id IS NULL", (uid, rec['id'])) if rec else None
+                if not claimed or claimed.rowcount != 1:
+                    patient_code = new_patient_code(c)
+                    c.execute('INSERT INTO patients(patient_id,name,email,user_id,channel,branch_id) VALUES(?,?,?,?,?,1)',
+                              (patient_code, pending['name'], email, uid, 'Email'))
             c.execute('DELETE FROM pending_signups WHERE email=?', (email,))
             c.commit()
         except IntegrityError:
@@ -1061,18 +1094,25 @@ def mfa_verify():
 def _me(c):
     return c.execute('SELECT * FROM users WHERE id=?', (session.get('uid'),)).fetchone()
 
-# Builds everything the Security page shows.
-def _security_page(c, u, **extra):
+# Everything the Security panel needs (two-step state, QR/setup key, backup codes left, Google link).
+def _security_ctx(c, u):
     enabled = bool(u['mfa_enabled'] and u['mfa_secret'])
     setup_secret = session.get('mfa_setup_secret') if not enabled else None
     qr = key = None
     if setup_secret:
         qr = mfa.qr_data_uri(mfa.provisioning_uri(setup_secret, u['email'], MFA_ISSUER)); key = mfa.pretty_secret(setup_secret)
     left = c.execute('SELECT COUNT(*) AS n FROM mfa_backup_codes WHERE user_id=? AND used=0', (u['id'],)).fetchone()['n'] if enabled else 0
+    return dict(u=u, mfa_enabled=enabled, setup=bool(setup_secret), qr=qr, setup_key=key, codes_left=left, google_linked=bool(u['google_sub']))
+
+# Renders the Security panel. Patients see it inside their Profile page; staff keep the standalone Security page.
+def _security_page(c, u, **extra):
+    ctx = _security_ctx(c, u)
+    if u['role'] == 'Patient':
+        p = patient_for_user()
+        if p: return render_template('patient_profile.html', p=p, sms_enabled=sms.is_configured(), **ctx, **extra)
     patient = u['role'] == 'Patient'
-    return render_template('account_security.html', u=u, mfa_enabled=enabled, setup=bool(setup_secret), qr=qr, setup_key=key,
-                           codes_left=left, google_linked=bool(u['google_sub']), base='base_patient.html' if patient else 'base_staff.html',
-                           p=patient_for_user() if patient else None, **extra)
+    return render_template('account_security.html', base='base_patient.html' if patient else 'base_staff.html',
+                           p=patient_for_user() if patient else None, **ctx, **extra)
 
 # Replaces the user's backup codes with ten new ones and returns them for display (shown once, stored only hashed).
 def _new_backup_codes(c, uid):
@@ -1086,10 +1126,12 @@ def _log_if_staff(c, text, uid):
     if session.get('role') != 'Patient': log_staff_action(c, text, 'user', uid)
 
 # Security page: turn two-step sign-in on or off, see backup codes left, see whether Google is linked.
-# Route: GET /account/security  |  Access: any signed-in user
+# Route: GET /account/security  |  Access: any signed-in user (patients are sent to Profile > Security)
 @app.route('/account/security')
 @any_user_required
 def account_security():
+    if session.get('role') == 'Patient' and patient_for_user():
+        return redirect(url_for('patient_profile', _anchor='security'))     # patients: Security lives inside Profile
     c = db()
     try: return _security_page(c, _me(c))
     finally: c.close()
@@ -1276,15 +1318,18 @@ def google_sign_in(sub, email, name, intent):
                     flash('No HawkEye account uses that Google email yet. Use “Sign up with Google” to create one.', 'error'); return redirect(url_for('signup'))
                 if len(email) > 190 or not _EMAIL_RE.match(email):
                     flash('That Google email address cannot be used.', 'error'); return redirect(url_for('signup'))
-                if c.execute('SELECT 1 FROM patients WHERE lower(email)=? LIMIT 1', (email,)).fetchone():
-                    flash('A clinic record may already exist for this email. Create your account with the form below and enter your patient ID and birthdate to link it, or contact the clinic.', 'error')
+                rec = claimable_by_email(c, email)
+                if not rec and c.execute('SELECT 1 FROM patients WHERE lower(email)=? LIMIT 1', (email,)).fetchone():
+                    flash('That email is already linked to a patient account. Sign in with your email and password.', 'error')
                     return redirect(url_for('signup'))
                 display = name[:100] if len(name) >= 2 else email.split('@')[0][:100].ljust(2, '_')
                 try:
                     cur = c.execute("INSERT INTO users(name,email,password,role,status,email_verified,branch_id,google_sub) VALUES(?,?,?,'Patient','Active',1,1,?)",
                                     (display, email, generate_password_hash(secrets.token_urlsafe(32)), sub))
-                    c.execute('INSERT INTO patients(patient_id,name,email,user_id,channel,branch_id) VALUES(?,?,?,?,?,1)',
-                              (new_patient_code(c), display, email, cur.lastrowid, 'Email'))
+                    claimed = c.execute('UPDATE patients SET user_id=? WHERE id=? AND user_id IS NULL', (cur.lastrowid, rec['id'])) if rec else None
+                    if not claimed or claimed.rowcount != 1:
+                        c.execute('INSERT INTO patients(patient_id,name,email,user_id,channel,branch_id) VALUES(?,?,?,?,?,1)',
+                                  (new_patient_code(c), display, email, cur.lastrowid, 'Email'))
                     c.commit()
                 except IntegrityError:
                     c.rollback(); flash('An account with this email already exists. Please sign in.', 'error'); return redirect(url_for('patient_login'))
@@ -1479,7 +1524,7 @@ def resolve_urgent_appointment(aid):
     return redirect(url_for('dashboard'))
 
 
-# Contacts a patient about a missed visit by email, website chat or SMS (prototype) and logs a
+# Contacts a patient about a missed visit by email, website chat or SMS and logs a
 # reminder.
 # Route: POST /staff/urgent-contact/<int:pid>/<channel>  |  Access: staff only (Admin, Clinic Staff or Optometrist)
 @app.route('/staff/urgent-contact/<int:pid>/<channel>',methods=['POST'])
@@ -1498,7 +1543,10 @@ def urgent_contact(pid,channel):
     elif channel=='chat':
         c.execute('INSERT INTO clinic_chat_messages(patient_id,staff_id,message,created_at,read_status) VALUES(?,?,?,?,?)',(pid,session.get('uid'),body,datetime.now().strftime('%Y-%m-%d %H:%M:%S'),'Unread')); flash('Message sent to the patient\'s Clinic Chat.','ok')
     else:
-        post_website_reminder(c,pid,None,body,'Website (SMS prototype)','Prototype - Not Sent'); flash('SMS prototype saved and posted on the patient website. No SMS was sent.','ok')
+        if not pat['phone']: c.close(); flash('This patient has no phone number saved.','error'); return redirect(url_for('dashboard'))
+        ok,detail=sms.send_sms(pat['phone'],body)
+        post_website_reminder(c,pid,None,body,sms.channel_label()+' + Website' if ok else 'Website (SMS failed)','Sent' if ok else 'Failed')
+        flash(('Demo SMS recorded (not really sent) and posted on the patient website.' if sms.provider()=='demo' else 'SMS sent and posted on the patient website.') if ok else 'SMS failed ('+detail+'), but the reminder is on the patient website.','ok' if ok else 'error')
     log_staff_action(c,'Contacted urgent patient via '+channel,'patient',pid); c.commit(); c.close(); return redirect(url_for('dashboard'))
 
 # Creates a new patient (/staff/patient/new) or edits an existing one's details. Branch-
@@ -1511,10 +1559,36 @@ def patient_edit(pid=None):
     c=db(); p=c.execute('SELECT * FROM patients WHERE id=?',(pid,)).fetchone() if pid else None
     if p and session.get('role')!='Admin' and p['branch_id']!=(session.get('branch_id') or 1): c.close(); return 'Forbidden: patient belongs to another branch',403
     if request.method=='POST':
-        vals=(request.form['patient_id'],request.form['name'],request.form['birthdate'],request.form['phone'],request.form['email'],request.form['address'],request.form['channel'])
-        if pid:c.execute('UPDATE patients SET patient_id=?,name=?,birthdate=?,phone=?,email=?,address=?,channel=? WHERE id=?',vals+(pid,))
-        else:c.execute('INSERT INTO patients(patient_id,name,birthdate,phone,email,address,channel,branch_id) VALUES(?,?,?,?,?,?,?,?)',vals+(session.get('branch_id') or 1,))
-        c.commit(); c.close(); return redirect(url_for('patients'))
+        phone=request.form.get('phone','').strip()
+        if phone and not sms.normalize_phone(phone):
+            flash('That contact number does not look like a mobile number (for example 0917 123 4567 or +63 917 123 4567).','error')
+            c.close(); return render_template('patient_edit.html',p=dict(request.form,id=pid)),400
+        f=request.form
+        name=f.get('name','').strip()
+        if not name:
+            flash('Enter the patient\'s full name.','error'); c.close(); return render_template('patient_edit.html',p=dict(f,id=pid)),400
+        code=f.get('patient_id','').strip()
+        if not code:
+            # Same unguessable ID the patient signup uses, so staff don't have to invent one.
+            code=p['patient_id'] if p else new_patient_code(c)
+        email=f.get('email','').strip()
+        channel=f.get('channel','SMS') if f.get('channel') in ('SMS','Email') else ('Email' if email else 'SMS')
+        vals=(code,name,f.get('birthdate','').strip(),phone,email,f.get('address','').strip(),channel)
+        try:
+            if pid:
+                c.execute('UPDATE patients SET patient_id=?,name=?,birthdate=?,phone=?,email=?,address=?,channel=? WHERE id=?',vals+(pid,))
+            else:
+                c.execute('INSERT INTO patients(patient_id,name,birthdate,phone,email,address,channel,branch_id) VALUES(?,?,?,?,?,?,?,?)',vals+(session.get('branch_id') or 1,))
+            c.commit()
+        except IntegrityError:
+            c.rollback(); c.close()
+            flash('That Patient ID is already used by another patient. Leave it blank to generate one automatically.','error')
+            return render_template('patient_edit.html',p=dict(f,id=pid)),400
+        except MySQLError:
+            c.rollback(); c.close(); app.logger.exception('Saving patient failed')
+            flash('The patient could not be saved. Please check the details and try again.','error')
+            return render_template('patient_edit.html',p=dict(f,id=pid)),400
+        c.close(); flash('Patient saved.','ok'); return redirect(url_for('patients'))
     c.close(); return render_template('patient_edit.html',p=p)
 # Lists prescriptions recorded in the clinic (all branches for Admin, own branch otherwise).
 # Route: GET /staff/prescriptions  |  Access: staff only (Admin, Clinic Staff or Optometrist)
@@ -2533,15 +2607,28 @@ def patient_reminders():
 @patient_record_required
 def reminder_read(rid):
     p=patient_for_user(); c=db(); c.execute("UPDATE reminders SET read_status='Read' WHERE id=? AND patient_id=?",(rid,p['id'])); c.commit(); c.close(); return redirect(url_for('patient_reminders'))
-# Lets the patient view and update their phone, email, address and preferred reminder channel.
+# Lets the patient view and update their phone, address and preferred reminder channel, and manage
+# two-step sign-in (the Security section of this page).
 # Route: GET/POST /patient/profile  |  Access: signed-in patients only
 @app.route('/patient/profile',methods=['GET','POST'])
 @login_required
 @patient_record_required
 def patient_profile():
     p=patient_for_user(); c=db()
-    if request.method=='POST': c.execute('UPDATE patients SET phone=?,email=?,address=?,channel=? WHERE id=?',(request.form['phone'],request.form['email'],request.form['address'],request.form['channel'],p['id'])); c.commit(); p=c.execute('SELECT * FROM patients WHERE id=?',(p['id'],)).fetchone(); flash('Contact details saved.','ok')
-    c.close(); return render_template('patient_profile.html',p=p)
+    try:
+        if request.method=='POST':
+            phone=request.form.get('phone','').strip(); channel=request.form.get('channel','Email')
+            if channel not in ('SMS','Email'): channel='Email'
+            if phone and not sms.normalize_phone(phone):
+                flash('That phone number does not look right. Enter a mobile number such as 0917 123 4567 or +63 917 123 4567.','error')
+            elif channel=='SMS' and not phone:
+                flash('Add a mobile number to get SMS reminders, or choose Email.','error')
+            else:
+                # The sign-in email is read-only here, so it is never taken from the form.
+                c.execute('UPDATE patients SET phone=?,address=?,channel=? WHERE id=?',(phone[:60],request.form.get('address','').strip()[:500],channel,p['id'])); c.commit()
+                p=c.execute('SELECT * FROM patients WHERE id=?',(p['id'],)).fetchone(); flash('Contact details saved.','ok')
+        return render_template('patient_profile.html',p=p,sms_enabled=sms.is_configured(),**_security_ctx(c,_me(c)))
+    finally: c.close()
 
 # Background jobs: appointment reminders every 15 min, prescription follow-up emails hourly,
 # and clean-up of expired rate-limit rows every 6 hours. Each job runs in one worker only (see exclusive()).

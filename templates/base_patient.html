@@ -15,7 +15,7 @@
     <a href="{{url_for('patient_reminders')}}"{% if ep=='patient_reminders' %} aria-current="page"{% endif %}>Reminders{% if reminder_unread %}<span class="navbadge">{{reminder_unread}}</span>{% endif %}</a>
     <a href="{{url_for('patient_chat')}}"{% if ep=='patient_chat' %} aria-current="page"{% endif %}>Messages{% if chat_unread %}<span class="navbadge">{{chat_unread}}</span>{% endif %}</a>
     <a href="{{url_for('patient_profile')}}"{% if ep=='patient_profile' %} aria-current="page"{% endif %}>Profile</a>
-    <a href="{{url_for('account_security')}}"{% if ep=='account_security' %} aria-current="page"{% endif %}>Security</a>
+    <form class="nav-signout" method="post" action="{{url_for('logout')}}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit"><svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>Sign out</button></form>
   </nav>
 </header>
 <main class="patient" id="main">
