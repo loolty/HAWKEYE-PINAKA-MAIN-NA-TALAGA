@@ -7,3 +7,6 @@ hawkeye.db
 backups/
 logs/
 *.sql.gz
+seed_demo.py
+*.bak
+apply_email_style.py

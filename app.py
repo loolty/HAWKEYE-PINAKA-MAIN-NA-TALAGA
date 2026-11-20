@@ -30,6 +30,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from werkzeug.security import generate_password_hash, check_password_hash
 import smtplib
 from email.message import EmailMessage
+from email_template import clinic_email, sender_header
 from markupsafe import escape as esc          # HTML-escape anything a person typed before it goes into an email
 from werkzeug.exceptions import HTTPException
 import production
@@ -151,7 +152,7 @@ def send_email(to_email, subject, html, text_body=None):
 
     message = EmailMessage()
     message['Subject'] = subject
-    message['From'] = mail_from
+    message['From'] = sender_header()
     message['To'] = to_email
     message.set_content(text_body or 'Please view this email in an HTML-compatible email client.')
     message.add_alternative(html, subtype='html')
@@ -228,7 +229,13 @@ def send_appointment_email(appointment_id, reason='scheduled reminder'):
     if not a:
         c.close(); return False, 'Appointment not found.'
     msg = f"Hello {a['name']}, this is HawkEye Optical Clinic. Your {a['type'].lower()} is scheduled for {a['date']} at {a['time']}. Please contact the clinic if you need to reschedule."
-    html = f'<p>Hello {esc(a["name"])},</p><p>This is a reminder that your <b>{esc(a["type"])}</b> is scheduled for <b>{esc(a["date"])} at {esc(a["time"])}</b>.</p><p>Please contact the clinic if you need to reschedule.</p><p>HawkEye Optical Clinic</p>'
+    html = clinic_email(
+        title='Appointment Reminder',
+        greeting_name=a['name'],
+        intro='This is a friendly reminder about your upcoming appointment.',
+        rows=[('Service', a['type']), ('Date', a['date']), ('Time', a['time'])],
+        footer_note='Please contact the clinic if you need to reschedule.',
+    )
     via, detail, label, status = notify_patient(a['email'], a['phone'], a['channel'], 'HawkEye Optical Clinic appointment reminder', html, msg, msg)
     post_website_reminder(c, a['patient_id'], appointment_id, msg, label, status)
     c.execute('UPDATE appointments SET reminder_status=? WHERE id=?', (status, appointment_id))
@@ -645,7 +652,7 @@ def send_due_prescription_reminders():
         already=c.execute("SELECT 1 FROM reminders WHERE patient_id=? AND appointment_id IS NULL AND message LIKE ? AND status='Sent' LIMIT 1",(r['patient_id'],f'%prescription review around {target}%')).fetchone()
         if already: continue
         message=f"Hello {r['name']}, HawkEye Optical Clinic recommends a prescription review around {target}. Please contact the clinic to arrange a visit."
-        html=f'<p>Hello {esc(r["name"])},</p><p>HawkEye Optical Clinic recommends a prescription review around <b>{target}</b>.</p><p>Please contact the clinic to arrange a visit.</p>'
+        html=clinic_email(title='Prescription Review Reminder',greeting_name=r['name'],intro='HawkEye Optical Clinic recommends a prescription review around the date below. Please contact the clinic to arrange a visit.',rows=[('Recommended review date',target)])
         via,detail,label,status=notify_patient(r['email'],r['phone'],r['channel'],'HawkEye Optical Clinic prescription follow-up',html,message,message)
         post_website_reminder(c,r['patient_id'],None,message,label,status)
         if status=='Failed': app.logger.warning('Prescription reminder delivery failed for patient %s: %s',r['patient_id'],detail)
@@ -761,8 +768,8 @@ def signup():
         birthdate = request.form.get('birthdate', '').strip()
 
         if too_many_requests('signup', email): return render_template('signup.html')
-        if not request.form.get('consent'):
-            flash('Please read and accept the Privacy Notice to create an account.', 'error')
+        if not request.form.get('consent') or not request.form.get('terms'):
+            flash('Please accept the Terms and Agreements and the Privacy Notice to create an account.', 'error')
             return render_template('signup.html')
         if len(name) < 2 or len(name) > 100 or len(password) < 8 or len(email) > 190 or not _EMAIL_RE.match(email):
             flash('Enter your full name, a valid email, and a password with at least 8 characters.', 'error')
@@ -797,7 +804,7 @@ def signup():
         ok, detail = send_email(
             email,
             'Verify your HawkEye Optical Clinic email',
-            f'<p>Hello {esc(name)},</p><p>Your HawkEye Optical Clinic verification code is:</p><p style="font-size:28px;font-weight:bold;letter-spacing:5px">{code}</p><p>This code expires in 10 minutes. If you did not request this, you can ignore this email.</p>',
+            clinic_email(title='Verify Your Email',greeting_name=name,intro='Use the verification code below to finish creating your account.',code=code,footer_note='This code expires in 10 minutes. If you did not request this, you can ignore this email.'),
             f'Your HawkEye Optical Clinic verification code is {code}. It expires in 10 minutes.'
         )
         if not ok:
@@ -907,7 +914,7 @@ def resend_verification():
         c=db(); u=c.execute("SELECT * FROM users WHERE email=? AND role='Patient' AND email_verified=0",(email,)).fetchone(); c.close()
         # Avoid revealing whether an email exists.
         if u:
-            link=email_verification_link(u['id'],u['email']); ok,detail=send_email(email,'Verify your HawkEye Optical Clinic account',f'<p><a href="{link}">Verify your email address</a></p><p>Link expires in 24 hours.</p>',f'Verify your email: {link}')
+            link=email_verification_link(u['id'],u['email']); ok,detail=send_email(email,'Verify your HawkEye Optical Clinic account',clinic_email(title='Verify Your Email',greeting_name=u['name'],intro='Click the button below to verify your email address and activate your account.',button=('Verify email address',link),footer_note='This link expires in 24 hours. If you did not request this, you can ignore this email.'),f'Verify your email: {link}')
             if not ok: app.logger.warning('Verification email failed: %s',detail)
         flash('If an unverified account exists for that address, a verification email has been sent.','ok')
     return render_template('resend_verification.html')
@@ -923,7 +930,7 @@ def forgot_password():
         c=db(); u=c.execute("SELECT * FROM users WHERE email=? AND status='Active'",(email,)).fetchone()
         if u:
             token=token_serializer().dumps({'uid':u['id'],'email':email,'purpose':'reset','pv':pw_fingerprint(u['password'])}); base=os.getenv('APP_BASE_URL','http://127.0.0.1:5000').rstrip('/'); link=f"{base}{url_for('reset_password',token=token)}"
-            ok,detail=send_email(email,'Reset your HawkEye Optical Clinic password',f'<p><a href="{link}">Reset password</a></p><p>This link expires in one hour.</p>',f'Reset your password: {link}')
+            ok,detail=send_email(email,'Reset your HawkEye Optical Clinic password',clinic_email(title='Reset Your Password',greeting_name=u['name'],intro='We received a request to reset your password. Click the button below to choose a new one.',button=('Reset password',link),footer_note='This link expires in one hour. If you did not request this, you can ignore this email and your password will stay the same.'),f'Reset your password: {link}')
             if not ok: app.logger.warning('Password reset email failed: %s',detail)
         c.close(); flash('If the account exists, password reset instructions will be emailed.','ok')
     return render_template('forgot_password.html')
@@ -978,6 +985,11 @@ def healthz():
 @app.route('/privacy')
 def privacy():
     return render_template('privacy.html', clinic=os.getenv('CLINIC_NAME','HawkEye Optical Clinic'),
+                           contact=os.getenv('CLINIC_CONTACT_EMAIL',''), address=os.getenv('CLINIC_ADDRESS',''))
+    
+@app.route('/terms')
+def terms():
+    return render_template('terms.html', clinic=os.getenv('CLINIC_NAME','HawkEye Optical Clinic'),
                            contact=os.getenv('CLINIC_CONTACT_EMAIL',''), address=os.getenv('CLINIC_ADDRESS',''))
 
 # Signs the user out. POST only, so a stray link cannot log someone out.
@@ -1262,7 +1274,7 @@ def google_start():
     if not google_auth.configured():
         flash('Google sign-in is not set up on this server.', 'error'); return redirect(back)
     if too_many_requests('google', per_ip=30): return redirect(back)
-    if intent == 'signup' and not request.form.get('consent'):
+    if intent == 'signup' and not (request.form.get('consent') and request.form.get('terms')):
         flash('Please read and accept the Privacy Notice to create an account.', 'error'); return redirect(back)
     attempt = google_auth.new_attempt()
     session['google_oauth'] = {'state': attempt['state'], 'nonce': attempt['nonce'], 'verifier': attempt['verifier'],
@@ -1537,7 +1549,7 @@ def urgent_contact(pid,channel):
     body=request.form.get('message','').strip()[:1000] or 'HawkEye Optical Clinic would like to help you arrange your follow-up visit.'
     if channel=='email':
         if not pat['email']: c.close(); flash('This patient has no email address saved.','error'); return redirect(url_for('dashboard'))
-        ok,detail=send_email(pat['email'],'HawkEye Optical Clinic follow-up needed',f'<p>Hello {esc(pat["name"])},</p><p>{esc(body)}</p><p>HawkEye Optical Clinic</p>',f'Hello {pat["name"]},\n{body}\nHawkEye Optical Clinic')
+        ok,detail=send_email(pat['email'],'HawkEye Optical Clinic follow-up needed',clinic_email(title='Follow-up Needed',greeting_name=pat['name'],intro=body,footer_note='Please contact the clinic to arrange your follow-up visit.'),f'Hello {pat["name"]},\n{body}\nHawkEye Optical Clinic')
         post_website_reminder(c,pid,None,body,'Email + Website' if ok else 'Website (email failed)','Sent' if ok else 'Failed')
         flash('Follow-up email sent and posted on the patient website.' if ok else 'Email failed ('+detail+'), but the reminder is on the patient website.','ok')
     elif channel=='chat':
@@ -2243,8 +2255,7 @@ def change_user_email(user_id):
             code = f"{secrets.randbelow(1000000):06d}"
             ok, detail = send_email(
                 new_email, 'HawkEye Optical Clinic: confirm your new email',
-                f'<p>Hello {esc(target["name"])},</p><p>Your HawkEye Optical Clinic login email is being changed to this address. Confirmation code:</p>'
-                f'<p style="font-size:28px;font-weight:bold;letter-spacing:5px">{code}</p><p>This code expires in 10 minutes. If you did not expect this, ignore this email.</p>',
+                clinic_email(title='Confirm Your New Email',greeting_name=target['name'],intro='Your HawkEye Optical Clinic login email is being changed to this address. Use the code below to confirm the change.',code=code,footer_note='This code expires in 10 minutes. If you did not expect this, you can ignore this email.'),
                 f'Your confirmation code for the new HawkEye Optical Clinic login email is {code}. It expires in 10 minutes.')
             if not ok:
                 app.logger.warning('Email change code failed: %s', detail)
@@ -2314,7 +2325,7 @@ def users():
             c.close(); flash(berr or 'Invalid role.','error'); return redirect(url_for('users'))
         try:
             c.execute("INSERT INTO users(name,email,password,role,status,email_verified,branch_id) VALUES(?,?,?,? ,'Active',1,?)",(request.form['name'].strip(),email,generate_password_hash(temp_password),role,branch_id)); c.commit()
-            new_user=c.execute('SELECT id,password FROM users WHERE email=?',(email,)).fetchone(); link=token_serializer().dumps({'uid':new_user['id'],'email':email,'purpose':'reset','pv':pw_fingerprint(new_user['password'])}); base=os.getenv('APP_BASE_URL','http://127.0.0.1:5000').rstrip('/'); reset_url=f"{base}{url_for('reset_password',token=link)}"; ok,_=send_email(email,'Your HawkEye Optical Clinic staff account',f'<p>Your account was created. Set your password using <a href="{reset_url}">this secure link</a>.</p>','Set your password using this link: '+reset_url)
+            new_user=c.execute('SELECT id,password FROM users WHERE email=?',(email,)).fetchone(); link=token_serializer().dumps({'uid':new_user['id'],'email':email,'purpose':'reset','pv':pw_fingerprint(new_user['password'])}); base=os.getenv('APP_BASE_URL','http://127.0.0.1:5000').rstrip('/'); reset_url=f"{base}{url_for('reset_password',token=link)}"; ok,_=send_email(email,'Your HawkEye Optical Clinic staff account',clinic_email(title='Your Staff Account',greeting_name=request.form['name'].strip(),intro='A HawkEye Optical Clinic staff account has been created for you. Click the button below to set your password.',button=('Set your password',reset_url),footer_note='Keep your login private and use it only for your assigned role.'),'Set your password using this link: '+reset_url)
             flash('User created.' + ('' if ok else ' Account created, but setup email failed; configure email API and use forgot password.'),'ok')
         except IntegrityError: flash('That email already has an account.','error')
     rows=c.execute("SELECT * FROM users WHERE role!='Patient'").fetchall(); reqs=c.execute('SELECT * FROM access_requests ORDER BY id DESC').fetchall(); branches=c.execute('SELECT * FROM branches WHERE active=1 ORDER BY name').fetchall(); c.close(); return render_template('users.html',rows=rows,reqs=reqs,branches=branches)
@@ -2342,9 +2353,7 @@ def request_user_removal(user_id):
         code = f"{secrets.randbelow(1000000):06d}"
         ok, detail = send_email(
             admin['email'], 'HawkEye Optical Clinic: confirm user removal',
-            f'<p>Hello {esc(admin["name"])},</p><p>Use this code to confirm removing <b>{esc(target["name"])}</b> ({esc(target["email"])}):</p>'
-            f'<p style="font-size:28px;font-weight:bold;letter-spacing:5px">{code}</p>'
-            '<p>This code expires in 10 minutes. If you did not request this, ignore this email and change your password.</p>',
+            clinic_email(title='Confirm User Removal',greeting_name=admin['name'],intro='Use the code below to confirm removing the following user from the system.',rows=[('Name',target['name']),('Email',target['email'])],code=code,footer_note='This code expires in 10 minutes. If you did not request this, ignore this email and change your password.'),
             f'Your code to confirm removing {target["name"]} ({target["email"]}) is {code}. It expires in 10 minutes.')
         if not ok:
             app.logger.warning('User removal code email failed: %s', detail)
@@ -2409,7 +2418,7 @@ def process_access_request(request_id,action):
     if not r: c.close(); flash('Pending request not found.','error'); return redirect(url_for('users'))
     if action=='approve':
         c.execute("INSERT INTO users(name,email,password,role,status,email_verified,branch_id) VALUES(?,?,?,?,'Active',1,1)",(r['name'] or r['email'].split('@')[0],r['email'],r['password'],r['role'] or 'Clinic Staff'))
-        ok,detail=send_email(r['email'],'HawkEye Optical Clinic staff access approved','<p>Your staff access request has been approved. You may now sign in.</p>','Your staff access request has been approved.')
+        ok,detail=send_email(r['email'],'HawkEye Optical Clinic staff access approved',clinic_email(title='Staff Access Approved',greeting_name=(r['name'] or 'there'),intro='Your staff access request has been approved. You may now sign in.'),'Your staff access request has been approved.')
         c.execute("UPDATE access_requests SET status='Approved' WHERE id=?",(request_id,)); flash('Request approved.' + ('' if ok else ' Notification email failed; check email settings.'),'ok')
     else: c.execute("UPDATE access_requests SET status='Rejected' WHERE id=?",(request_id,)); flash('Request rejected.','ok')
     c.commit(); c.close(); return redirect(url_for('users'))
@@ -2436,7 +2445,7 @@ def email_test():
     if session.get('role')!='Admin': return jsonify(ok=False,error='Admin only'),403
     to=request.form.get('email') or request.json.get('email') if request.is_json else request.form.get('email')
     if not to: return jsonify(ok=False,error='Email address required'),400
-    ok,detail=send_email(to,'HawkEye Optical Clinic email configuration test','<p>This is a test email from HawkEye Optical Clinic.</p>','This is a test email from HawkEye Optical Clinic.')
+    ok,detail=send_email(to,'HawkEye Optical Clinic email configuration test',clinic_email(title='Email Test',greeting_name='Admin',intro='This is a test email from HawkEye Optical Clinic. Your email settings are working.'),'This is a test email from HawkEye Optical Clinic.')
     return jsonify(ok=ok,message=detail), (200 if ok else 502)
 
 # Patient home: next appointment, follow-up due date and new reminders.

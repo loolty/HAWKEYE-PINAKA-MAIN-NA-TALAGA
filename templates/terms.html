@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Terms and Agreements · {{ clinic }}</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">{% include '_favicon.html' %}{% include '_theme.html' %}</head>
+<body>
+<div class="top">{% include '_brand.html' %}{% with tt='' %}{% include '_theme_toggle.html' %}{% endwith %}</div>
+<main class="privacy">
+<h1>Terms and Agreements</h1>
+<p class="muted">The rules for using the {{ clinic }} website and patient system. Please read them together with our <a href="{{ url_for('privacy') }}">Privacy Notice</a>.</p>
+
+<h2>1. Acceptance</h2>
+<p>By creating an account, signing in, or using this system, you agree to these Terms and Agreements and to the <a href="{{ url_for('privacy') }}">Privacy Notice</a>. If you do not agree, please do not use the system; you can still contact the clinic directly to book or ask about your care.</p>
+
+<h2>2. Who may use the system</h2>
+<p><b>Patients</b> must be at least 18 years old. A parent or legal guardian may create and manage an account for a child or for a person who cannot act for themselves, and is responsible for everything done under it. <b>Clinic staff</b> (administrators, optometrists and clinic staff) may use the system only with an account the clinic has approved for them, and only for their assigned role and branch.</p>
+
+<h2>3. Your account</h2>
+<p>You must give true and current information, including your name, email address, birthdate and contact number. Keep your password private and do not share your account or verification codes with anyone. You are responsible for activity under your account. Tell the clinic right away if you think someone else has accessed it. We may suspend an account that appears to be misused or compromised to protect patient information.</p>
+
+<h2>4. What the system is, and what it is not</h2>
+<p>This system supports clinic operations: appointments, reminders, messages with the clinic team, and viewing records the clinic has chosen to share with you. It does not diagnose, prescribe or replace an examination by an optometrist or doctor. <b>Do not use the chat, reminders or appointment pages for emergencies.</b> If you have sudden vision loss, eye injury, severe pain or any urgent symptom, go to the nearest emergency room or call your local emergency number.</p>
+
+<h2>5. Appointments and reminders</h2>
+<p>An appointment requested through the site is not guaranteed until the clinic confirms it. The clinic may reschedule or decline an appointment, for example because of optometrist availability, and will tell you using the contact details you provided. Please arrive on time and tell the clinic if you need to change or cancel. Missed appointments may be recorded as such in your record.</p>
+<p>By giving your email address and phone number you agree that the clinic may send you appointment reminders, follow-up notices, verification codes and service messages by email, SMS and on the website, according to the contact channel you choose. These are service messages, not advertising. Standard message and data rates from your provider may apply to SMS.</p>
+
+<h2>6. Your information and your consent</h2>
+<p>Your record includes <b>sensitive personal information</b> such as your health and eye-care details (for example, prescriptions, appointments and follow-up dates). Under the Data Privacy Act of 2012 (Republic Act No. 10173), the clinic needs your informed consent before it collects and uses this kind of information, unless the law allows otherwise. By accepting these Terms and ticking the consent box when you sign up, you confirm that you have read the Privacy Notice and agree that the clinic may collect, store, use and share your information as it describes, for providing your eye care and running the clinic.</p>
+<p>Your consent is voluntary. You may withdraw it, and you may ask to see, correct or delete your information, as explained in the Privacy Notice. Withdrawing consent may mean the clinic can no longer offer some online services, and the clinic may still keep records that the law or professional standards require it to keep.</p>
+
+<h2>7. Duties of clinic staff and authorised users</h2>
+<p>Staff handle other people's private health information and must:</p>
+<ul>
+<li>access, view or change a record only when needed for their work, and never out of curiosity or for personal reasons;</li>
+<li>keep their login private, use their own account only, and sign out on shared computers;</li>
+<li>not copy, photograph, export, message or share patient information outside the system or with anyone who is not authorised;</li>
+<li>explain to walk-in patients what information is being recorded and why, and collect their details only with their consent;</li>
+<li>keep patient information confidential even after they stop working at the clinic;</li>
+<li>report right away any lost device, shared password, wrong disclosure or suspected breach to an administrator.</li>
+</ul>
+<p>Staff actions in the system are recorded in an audit log. Misuse of patient information may lead to removal of access, disciplinary action, and legal liability under the Data Privacy Act.</p>
+
+<h2>8. Acceptable use</h2>
+<p>You agree not to: use someone else's identity or account; enter false or misleading information; try to access records that are not yours; probe, disrupt or bypass the security of the system; send unlawful, abusive or harassing messages through the chat; or upload malicious files or code. We may limit or end access for anyone who does.</p>
+
+<h2>9. Accuracy and availability</h2>
+<p>We work to keep the system and your records accurate and available, but the system may sometimes be unavailable because of maintenance, internet or power problems, or reasons outside our control. Reminders and messages can be delayed or fail to arrive, so please also keep track of your own appointments. Tell the clinic if something in your record looks wrong so it can be corrected.</p>
+
+<h2>10. Limits of responsibility</h2>
+<p>To the extent the law allows, {{ clinic }} is not responsible for losses caused by system downtime, delayed or undelivered messages, or by you sharing your password or leaving your account open on a device. Nothing in these Terms limits your rights under the Data Privacy Act or any other law, including your right to claim damages for inaccurate, outdated or unlawfully used personal information, or any responsibility the clinic cannot lawfully exclude.</p>
+
+<h2>11. If something goes wrong with your data</h2>
+<p>If there is a personal data breach that is likely to put you at real risk, the clinic will notify you and the National Privacy Commission as the law requires. You may also complain directly to the National Privacy Commission (<a href="https://privacy.gov.ph" target="_blank" rel="noopener">privacy.gov.ph</a>).</p>
+
+<h2>12. Changes to these Terms</h2>
+<p>We may update these Terms from time to time. The current version is always on this page, and the date below shows when it last changed. If a change is significant, we may ask you to accept the new Terms again the next time you sign in. Continuing to use the system after a change means you accept it.</p>
+
+<h2>13. Governing law</h2>
+<p>These Terms are governed by the laws of the Republic of the Philippines.</p>
+
+<h2>14. Contact us</h2>
+<p>For questions about these Terms, your account or your information, contact
+{% if contact %}<a href="mailto:{{ contact }}">{{ contact }}</a>{% else %}the clinic{% endif %}{% if address %} or visit us at {{ address }}{% endif %}.</p>
+
+<p class="muted small">Last updated: November 20, 2026.</p>
+<p><a class="btn" href="{{ url_for('index') }}">← Back to home</a></p>
+</main>
+</body></html>

@@ -10,13 +10,13 @@ Replace the INPUTS with numbers from your own appointments data (see the SQL in 
 import heapq, math, random, statistics
 
 # ---------------- INPUTS (edit these) ----------------
-ARRIVALS_PER_HOUR = 5.0    # average patients arriving per hour
+ARRIVALS_PER_HOUR = 2.0    # average patients arriving per hour
 MEAN_SERVICE_MIN = 20.0    # average consultation length (minutes)
 OPEN_HOURS = 8             # clinic hours per day
-DOCTORS = [1, 2, 3, 4]     # staffing levels to compare
+DOCTORS = [1, 2]     # staffing levels to compare
 TARGET_WAIT_MIN = 15       # service target: wait under this many minutes
 NO_SHOW_RATE = 0.15        # share of booked patients who do not come
-BOOKED_PER_DAY = 40        # appointments booked per day (no-show model)
+BOOKED_PER_DAY = 10        # appointments booked per day (no-show model)
 RUNS = 1000                # simulated days per scenario
 SEED = 42
 # ------------------------------------------------------

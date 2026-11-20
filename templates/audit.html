@@ -1,0 +1,5 @@
+{% extends 'base_staff.html' %}
+{% block title %}Audit log{% endblock %}
+{% block body %}<div class="section-heading"><div><h1>Audit log</h1><p class="muted">Admin only. The 300 most recent staff actions, newest first. Read-only.</p></div></div>
+<div class="card"><form method="get" style="margin-bottom:12px"><input name="q" value="{{ q }}" placeholder="Search action, person or record type" aria-label="Search audit log" maxlength="100"> <button class="btn">Search</button>{% if q %} <a class="btn" href="{{ url_for('audit_log') }}">Clear</a>{% endif %}</form>
+<table><tr><th>When</th><th>Who</th><th>Action</th><th>Record</th></tr>{% for r in rows %}<tr><td>{{ r.created_at }}</td><td>{{ r.who }}{% if r.role %}<div class="muted small">{{ r.role }}</div>{% endif %}</td><td>{{ r.action }}</td><td>{{ r.entity }}{% if r.entity_id %} #{{ r.entity_id }}{% endif %}</td></tr>{% else %}<tr><td colspan="4" class="muted">No entries{% if q %} match your search{% endif %}.</td></tr>{% endfor %}</table></div>{% endblock %}
